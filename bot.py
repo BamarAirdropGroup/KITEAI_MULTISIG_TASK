@@ -112,11 +112,11 @@ def display_countdown(seconds):
     print(" " * 50, end='\r')
 
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(5), retry=retry_if_exception_type(Exception))
-def process_transaction(idx, private_key, nonce, attempt):
+def process_transaction(idx, private_key, attempt, request_count):
     global w3, proxy_factory, proxies
     
     selected_proxy = random.choice(proxies)
-    print(f"{Fore.CYAN}Using proxy for attempt {attempt}: {selected_proxy}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Using proxy for attempt {attempt}, request {request_count}: {selected_proxy}{Style.RESET_ALL}")
     w3 = Web3(ProxyHTTPProvider('https://rpc-testnet.gokite.ai/', selected_proxy))
     proxy_factory = w3.eth.contract(address=PROXY_FACTORY_ADDRESS, abi=PROXY_FACTORY_ABI)
 
@@ -128,14 +128,18 @@ def process_transaction(idx, private_key, nonce, attempt):
 
         account = w3.eth.account.from_key(private_key)
         sender_address = account.address
-        print(f"{Fore.CYAN}Processing account {idx}, attempt {attempt}: {sender_address}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Processing account {idx}, attempt {attempt}, request {request_count}: {sender_address}{Style.RESET_ALL}")
 
-        salt_nonce = nonce
+        
+        salt_nonce = random.randint(1, 10**18)
 
         balance = w3.eth.get_balance(sender_address)
         if balance < w3.to_wei('0.001', 'ether'):
             print(f"{Fore.YELLOW}Insufficient balance for {sender_address}: {w3.from_wei(balance, 'ether')} ETH{Style.RESET_ALL}")
             return None
+
+        
+        nonce = w3.eth.get_transaction_count(sender_address)
 
         gas_estimate = proxy_factory.functions.createProxyWithNonce(
             singleton,
@@ -173,29 +177,52 @@ def process_transaction(idx, private_key, nonce, attempt):
         else:
             print(f"{Fore.RED}Transaction failed for {sender_address}. Tx hash: {w3.to_hex(tx_hash)}{Style.RESET_ALL}")
             try:
-                revert_reason = w3.eth.call(tx, block_number=tx_receipt['blockNumber'] - 1)
-                print(f"{Fore.RED}Revert reason: {revert_reason}{Style.RESET_ALL}")
+                
+                tx_params = {
+                    'from': sender_address,
+                    'to': PROXY_FACTORY_ADDRESS,
+                    'data': tx['data'],
+                    'value': 0,
+                    'gas': gas_estimate,
+                    'gasPrice': w3.eth.gas_price,
+                }
+                w3.eth.call(tx_params, block_identifier=tx_receipt['blockNumber'] - 1)
             except Exception as re:
-                print(f"{Fore.RED}Could not fetch revert reason: {str(re)}{Style.RESET_ALL}")
+                print(f"{Fore.RED}Revert reason: {str(re)}{Style.RESET_ALL}")
 
         return tx_receipt
 
     except Exception as e:
-        print(f"{Fore.RED}Error processing account {idx}, attempt {attempt} ({sender_address}): {str(e)}{Style.RESET_ALL}")
+        print(f"{Fore.RED}Error processing account {idx}, attempt {attempt}, request {request_count} ({sender_address}): {str(e)}{Style.RESET_ALL}")
         raise
 
 def process_account(idx, private_key):
     try:
-        account = w3.eth.account.from_key(private_key)
-        sender_address = account.address
-        nonce = w3.eth.get_transaction_count(sender_address)
-
-        for attempt in range(1, 3):
-            tx_receipt = process_transaction(idx, private_key, nonce, attempt)
-            if tx_receipt and tx_receipt['status'] == 1:
-                nonce += 1
-            else:
-                break
+        for attempt in range(1, 4):  
+            try:
+                
+                tx_receipt_1 = process_transaction(idx, private_key, attempt, 1)
+                if tx_receipt_1 and tx_receipt_1['status'] == 1:
+                    print(f"{Fore.GREEN}First request successful for account {idx}{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.YELLOW}First request failed for account {idx}{Style.RESET_ALL}")
+                
+                
+                time.sleep(3)
+                
+                
+                tx_receipt_2 = process_transaction(idx, private_key, attempt, 2)
+                if tx_receipt_2 and tx_receipt_2['status'] == 1:
+                    print(f"{Fore.GREEN}Second request successful for account {idx}{Style.RESET_ALL}")
+                    break
+                else:
+                    print(f"{Fore.YELLOW}Second request failed for account {idx}{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}Retrying account {idx}, attempt {attempt + 1}{Style.RESET_ALL}")
+                    time.sleep(5)
+                    
+            except Exception as e:
+                print(f"{Fore.YELLOW}Retrying account {idx}, attempt {attempt + 1} due to error: {str(e)}{Style.RESET_ALL}")
+                time.sleep(5)
     except Exception as e:
         print(f"{Fore.RED}Account {idx} failed after retries: {str(e)}{Style.RESET_ALL}")
 
