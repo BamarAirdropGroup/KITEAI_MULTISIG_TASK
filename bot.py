@@ -59,12 +59,17 @@ def load_proxies():
         formatted_proxies = []
         for proxy in proxies:
             try:
-                parts = proxy.split(':')
-                if len(parts) != 4:
-                    print(f"{Fore.YELLOW}Invalid proxy format: {proxy}. Expected host:port:username:password{Style.RESET_ALL}")
+                
+                if '@' not in proxy:
+                    print(f"{Fore.YELLOW}Invalid proxy format: {proxy}. Expected username:password@ip:port{Style.RESET_ALL}")
                     continue
-                host, port, username, password = parts
-                formatted_proxy = f"{username}:{password}@{host}:{port}"
+                auth, address = proxy.split('@', 1)
+                if ':' not in auth or ':' not in address:
+                    print(f"{Fore.YELLOW}Invalid proxy format: {proxy}. Expected username:password@ip:port{Style.RESET_ALL}")
+                    continue
+                username, password = auth.split(':', 1)
+                ip, port = address.split(':', 1)
+                formatted_proxy = f"{username}:{password}@{ip}:{port}"
                 formatted_proxies.append(formatted_proxy)
             except Exception as e:
                 print(f"{Fore.YELLOW}Failed to parse proxy {proxy}: {str(e)}{Style.RESET_ALL}")
@@ -175,7 +180,7 @@ def process_transaction(idx, private_key, attempt, request_count, proxy_mapping)
             salt_nonce
         ).build_transaction({
             'from': sender_address,
-            'gas': gas_estimate + 100000,  
+            'gas': gas_estimate + 100000,
             'gasPrice': w3.eth.gas_price,
             'nonce': nonce,
             'chainId': chain_id
