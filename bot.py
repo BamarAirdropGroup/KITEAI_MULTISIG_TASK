@@ -23,7 +23,7 @@ try:
 except ImportError:
     UserAgent = None  
 
-# Initialize colorama with proper settings
+
 init(convert=True, strip=False, autoreset=True)
 warnings.filterwarnings("ignore", category=UserWarning, module="eth_utils")
 
@@ -99,11 +99,11 @@ class ProxyHTTPProvider(HTTPProvider):
         super().__init__(endpoint_uri, **kwargs)
         self.session = requests.Session()
         if proxy:
-            # Parse proxy components
+            
             proxy_parts = proxy.split('@')
             if len(proxy_parts) == 2:
                 credentials, host = proxy_parts
-                username, password = credentials.split(':')[1:]  # Remove scheme (http://)
+                username, password = credentials.split(':')[1:]  
                 self.session.auth = (username, password)
                 self.session.proxies = {
                     'http': f'http://{host}',
@@ -155,7 +155,7 @@ class KiteAIBot:
             self.proxies = []
             for proxy in proxies:
                 try:
-                    # Validate proxy format: username:password@ip:port
+                    
                     parts = proxy.split('@')
                     if len(parts) != 2:
                         logger.error(f"Invalid proxy format: {proxy}. Expected username:password@ip:port")
@@ -277,7 +277,7 @@ class KiteAIBot:
                                 logger.error(f"Proxy Authentication Required for {address} with proxy {proxy_url}")
                                 if use_proxy and proxy_attempt < proxy_attempts - 1:
                                     proxy_url = self.rotate_proxy(address)
-                                    break  # Try next proxy
+                                    break  
                                 return None
                             response.raise_for_status()
                             data = await response.json()
@@ -298,7 +298,7 @@ class KiteAIBot:
                     if e.status == 407 and use_proxy and proxy_attempt < proxy_attempts - 1:
                         logger.info(f"Rotating proxy for {address} due to 407 error")
                         proxy_url = self.rotate_proxy(address)
-                        break  # Try next proxy
+                        break  
                     if attempt < max_retries:
                         await asyncio.sleep(5)
                         continue
@@ -308,7 +308,7 @@ class KiteAIBot:
                         await asyncio.sleep(5)
                         continue
             else:
-                continue  # Continue to next proxy attempt if retries exhausted
+                continue  
         return None
 
     async def create_quiz(self, address: str, use_proxy: bool, retries=5):
@@ -565,7 +565,7 @@ class KiteAIBot:
             proxy_addresses = []
             for attempt in range(1, 4):
                 logger.info(f"Attempt {attempt} for account {idx}")
-                # First proxy creation
+                
                 tx_receipt_1, proxy_address_1 = self.process_transaction(idx, private_key, attempt, 1, proxy_mapping)
                 if tx_receipt_1 and tx_receipt_1['status'] == 1 and proxy_address_1:
                     logger.success(f"First proxy creation successful for account {idx}: {proxy_address_1}")
@@ -575,14 +575,14 @@ class KiteAIBot:
                     time.sleep(5)
                     continue
 
-                time.sleep(DELAY_BETWEEN_TX)  # Delay between transactions
+                time.sleep(DELAY_BETWEEN_TX)  
 
-                # Second proxy creation
+                
                 tx_receipt_2, proxy_address_2 = self.process_transaction(idx, private_key, attempt, 2, proxy_mapping)
                 if tx_receipt_2 and tx_receipt_2['status'] == 1 and proxy_address_2:
                     logger.success(f"Second proxy creation successful for account {idx}: {proxy_address_2}")
                     proxy_addresses.append(proxy_address_2)
-                    break  # Both proxies created successfully, exit retry loop
+                    break 
                 else:
                     logger.warning(f"Second proxy creation failed for account {idx}. Retrying...")
                     time.sleep(5)
@@ -601,7 +601,7 @@ class KiteAIBot:
         logger.info(f"Starting processing for {len(private_keys)} accounts at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
         separator = "=" * 25
         with open('address.txt', 'w') as f:
-            f.write('')  # Clear address.txt at the start
+            f.write('')  
         proxy_mapping = {}
 
         for idx, private_key in enumerate(private_keys, 1):
@@ -614,7 +614,7 @@ class KiteAIBot:
                 logger.error("Invalid Private Key")
                 continue
 
-            # Set up headers
+            
             if UserAgent:
                 ua = UserAgent()
                 user_agent = ua.random
@@ -650,10 +650,10 @@ class KiteAIBot:
                 await self.process_daily_quiz(address, use_proxy)
             else:
                 logger.error("Login Failed. Skipping quiz for this account.")
-                # Continue to multisig and transfer even if quiz fails
+                
             await asyncio.sleep(3)
 
-            # Step 2: Create two proxy addresses
+            
             logger.banner("KiteAI Multisig Task Bot")
             logger.info(f"Starting multisig processing for account {idx} at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
             proxy_addresses = self.process_account(idx, private_key, proxy_mapping)
@@ -662,7 +662,7 @@ class KiteAIBot:
                 continue
             logger.info(f"Finished multisig processing for account {idx} at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
 
-            # Step 3: Send KITE to second proxy address
+            
             logger.info("Starting KITE transfer to second proxy address...")
             selected_proxy = random.choice(self.proxies) if self.proxies else None
             logger.info(f"Using proxy for wallet {idx}: {selected_proxy or 'None'}")
@@ -678,7 +678,7 @@ class KiteAIBot:
                 continue
             account = w3_transfer.eth.account.from_key(private_key)
             sender_address = account.address
-            second_proxy = proxy_addresses[1]  # Use the second proxy address
+            second_proxy = proxy_addresses[1]  
             if not second_proxy:
                 logger.error(f"No second proxy address found for account {sender_address}. Skipping transfer.")
                 continue
@@ -700,8 +700,8 @@ class KiteAIBot:
 
     async def main(self):
         try:
-            # Display slow-printed logo at startup
-            self.slow(f"{Colors.GREEN}🪁🪁🪁🪁🪁 KITEAI_DAILY_QUIZ_&_MULTISIG_TASK_BOT 1.4 🪁🪁🪁🪁🪁{Colors.RESET}", 100)
+            
+            self.slow(f"{Colors.GREEN}🪁🪁🪁🪁🪁 KITEAI_DAILY_QUIZ_&_MULTISIG_TASK_BOT 1.1 🪁🪁🪁🪁🪁{Colors.RESET}", 100)
             with open('accounts.txt', 'r') as file:
                 private_keys = [line.strip() for line in file if line.strip() and not line.startswith("#")]
             if not private_keys:
