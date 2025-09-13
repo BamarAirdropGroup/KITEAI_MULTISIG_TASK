@@ -23,13 +23,11 @@ try:
 except ImportError:
     UserAgent = None  
 
-
+# Initialize colorama with proper settings
 init(convert=True, strip=False, autoreset=True)
 warnings.filterwarnings("ignore", category=UserWarning, module="eth_utils")
 
-
 load_dotenv()
-
 
 RPC_URL = 'https://rpc-testnet.gokite.ai/'
 PRIVATE_KEY_FILE = 'accounts.txt'
@@ -65,16 +63,14 @@ PROXY_FACTORY_ABI = [
     }
 ]
 
-
 class Colors:
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    RED = '\033[31m'
-    WHITE = '\033[37m'
-    CYAN = '\033[36m'
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-
+    GREEN = Fore.GREEN
+    YELLOW = Fore.YELLOW
+    RED = Fore.RED
+    WHITE = Fore.WHITE
+    CYAN = Fore.CYAN
+    RESET = Style.RESET_ALL
+    BOLD = Style.BRIGHT
 
 class Logger:
     @staticmethod
@@ -98,15 +94,26 @@ class Logger:
 
 logger = Logger()
 
-
 class ProxyHTTPProvider(HTTPProvider):
     def __init__(self, endpoint_uri, proxy, **kwargs):
         super().__init__(endpoint_uri, **kwargs)
         self.session = requests.Session()
-        self.session.proxies = {
-            'http': f'http://{proxy}',
-            'https': f'http://{proxy}',
-        }
+        if proxy:
+            # Parse proxy components
+            proxy_parts = proxy.split('@')
+            if len(proxy_parts) == 2:
+                credentials, host = proxy_parts
+                username, password = credentials.split(':')[1:]  # Remove scheme (http://)
+                self.session.auth = (username, password)
+                self.session.proxies = {
+                    'http': f'http://{host}',
+                    'https': f'http://{host}',
+                }
+            else:
+                self.session.proxies = {
+                    'http': proxy,
+                    'https': proxy,
+                }
 
     def make_request(self, method, params):
         try:
@@ -118,7 +125,6 @@ class ProxyHTTPProvider(HTTPProvider):
 
 class KiteAIBot:
     def __init__(self):
-        
         self.NEO_API = "https://neo.prod.gokite.ai"
         self.TESTNET_API = "https://testnet.gokite.ai"
         self.TESTNET_HEADERS = {}
@@ -129,8 +135,6 @@ class KiteAIBot:
         self.proxy_index = 0
         self.account_proxies = {}
         self.wib = pytz.timezone('Asia/Jakarta')
-
-        
         self.w3 = None
         self.proxy_factory = None
         self.singleton = Web3.to_checksum_address('0x3E5c63644E683549055b9Be8653de26E0B4CD36E')
@@ -147,13 +151,25 @@ class KiteAIBot:
                 logger.info("proxy.txt not found or empty, will use direct connection")
                 return
             with open(filename, 'r') as f:
-                self.proxies = [line.strip() for line in f.read().splitlines() if line.strip() and not line.startswith("#")]
-                self.proxies = [f"{username}:{password}@{ip}:{port}" for proxy in self.proxies
-                                for username, password, ip, port in [proxy.split('@')[0].split(':') + proxy.split('@')[1].split(':')]]
+                proxies = [line.strip() for line in f.read().splitlines() if line.strip() and not line.startswith("#")]
+            self.proxies = []
+            for proxy in proxies:
+                try:
+                    # Validate proxy format: username:password@ip:port
+                    parts = proxy.split('@')
+                    if len(parts) != 2:
+                        logger.error(f"Invalid proxy format: {proxy}. Expected username:password@ip:port")
+                        continue
+                    credentials, host = parts
+                    scheme, username, password = credentials.split(':')
+                    ip, port = host.split(':')
+                    self.proxies.append(f"{scheme}:{username}:{password}@{ip}:{port}")
+                except Exception as e:
+                    logger.error(f"Invalid proxy format: {proxy}. Error: {str(e)}")
             if not self.proxies:
-                logger.info("No proxies found in proxy.txt")
+                logger.info("No valid proxies found in proxy.txt")
                 return
-            logger.info(f"Loaded {len(self.proxies)} proxies from proxy.txt")
+            logger.info(f"Loaded {len(self.proxies)} valid proxies from proxy.txt")
         except Exception as e:
             logger.error(f"Failed to load proxies: {e}")
             self.proxies = []
@@ -172,6 +188,16 @@ class KiteAIBot:
             self.account_proxies[account] = proxy
             self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
         return self.account_proxies[account]
+
+    def rotate_proxy(self, account):
+        """Rotate to the next proxy for the given account."""
+        if not self.proxies:
+            return None
+        self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
+        proxy = self.check_proxy_schemes(self.proxies[self.proxy_index])
+        self.account_proxies[account] = proxy
+        logger.info(f"Rotated to new proxy for {account}: {proxy}")
+        return proxy
 
     def generate_address(self, private_key: str):
         try:
@@ -222,52 +248,67 @@ class KiteAIBot:
 
     async def user_signin(self, address: str, use_proxy: bool, max_retries=3):
         url = f"{self.NEO_API}/v2/signin"
-        for attempt in range(1, max_retries + 1):
-            try:
-                logger.loading(f"Logging in to {address} (Attempt {attempt}/{max_retries})")
-                auth_token = self.encrypt_address(address)
-                if not auth_token:
-                    return None
-                headers = {
-                    **self.TESTNET_HEADERS[address],
-                    "Authorization": auth_token,
-                    "Content-Type": "application/json"
-                }
-                body = json.dumps({"eoa": address})
-                proxy_url = self.get_next_proxy_for_account(address) if use_proxy else None
-                async with ClientSession(timeout=ClientTimeout(total=120)) as session:
-                    async with session.post(url=url, headers=headers, data=body, proxy=proxy_url) as response:
-                        if response.status == 500:
-                            error_text = await response.text()
-                            logger.error(f"Server Error (500) for {address} - Response: {error_text}")
-                            if attempt < max_retries:
-                                await asyncio.sleep(10)
-                                continue
-                            return None
-                        response.raise_for_status()
-                        data = await response.json()
-                        if data.get("error"):
-                            logger.error(f"Login failed for {address}: {data['error']}")
-                            return None
-                        access_token = data["data"]["access_token"]
-                        aa_address = data["data"]["aa_address"]
-                        cookie_header = self.extract_cookies(response.headers)
-                        logger.success(f"Login successful for {address}")
-                        return {
-                            "access_token": access_token,
-                            "aa_address": aa_address,
-                            "cookie_header": cookie_header
-                        }
-            except ClientResponseError as e:
-                logger.error(f"Login failed for {address} - {e.status}, message='{e.message}', url='{url}'")
-                if attempt < max_retries:
-                    await asyncio.sleep(5)
-                    continue
-            except Exception as e:
-                logger.error(f"Login failed for {address}: {str(e)}")
-                if attempt < max_retries:
-                    await asyncio.sleep(5)
-                    continue
+        proxy_attempts = len(self.proxies) if use_proxy else 1
+        for proxy_attempt in range(proxy_attempts):
+            proxy_url = self.get_next_proxy_for_account(address) if use_proxy else None
+            logger.info(f"Using proxy for {address}: {proxy_url or 'None'}")
+            for attempt in range(1, max_retries + 1):
+                try:
+                    logger.loading(f"Logging in to {address} (Proxy Attempt {proxy_attempt + 1}/{proxy_attempts}, Attempt {attempt}/{max_retries})")
+                    auth_token = self.encrypt_address(address)
+                    if not auth_token:
+                        return None
+                    headers = {
+                        **self.TESTNET_HEADERS[address],
+                        "Authorization": auth_token,
+                        "Content-Type": "application/json"
+                    }
+                    body = json.dumps({"eoa": address})
+                    async with ClientSession(timeout=ClientTimeout(total=120)) as session:
+                        async with session.post(url=url, headers=headers, data=body, proxy=proxy_url) as response:
+                            if response.status == 500:
+                                error_text = await response.text()
+                                logger.error(f"Server Error (500) for {address} - Response: {error_text}")
+                                if attempt < max_retries:
+                                    await asyncio.sleep(10)
+                                    continue
+                                return None
+                            if response.status == 407:
+                                logger.error(f"Proxy Authentication Required for {address} with proxy {proxy_url}")
+                                if use_proxy and proxy_attempt < proxy_attempts - 1:
+                                    proxy_url = self.rotate_proxy(address)
+                                    break  # Try next proxy
+                                return None
+                            response.raise_for_status()
+                            data = await response.json()
+                            if data.get("error"):
+                                logger.error(f"Login failed for {address}: {data['error']}")
+                                return None
+                            access_token = data["data"]["access_token"]
+                            aa_address = data["data"]["aa_address"]
+                            cookie_header = self.extract_cookies(response.headers)
+                            logger.success(f"Login successful for {address}")
+                            return {
+                                "access_token": access_token,
+                                "aa_address": aa_address,
+                                "cookie_header": cookie_header
+                            }
+                except ClientResponseError as e:
+                    logger.error(f"Login failed for {address} - {e.status}, message='{e.message}', url='{url}'")
+                    if e.status == 407 and use_proxy and proxy_attempt < proxy_attempts - 1:
+                        logger.info(f"Rotating proxy for {address} due to 407 error")
+                        proxy_url = self.rotate_proxy(address)
+                        break  # Try next proxy
+                    if attempt < max_retries:
+                        await asyncio.sleep(5)
+                        continue
+                except Exception as e:
+                    logger.error(f"Login failed for {address}: {str(e)}")
+                    if attempt < max_retries:
+                        await asyncio.sleep(5)
+                        continue
+            else:
+                continue  # Continue to next proxy attempt if retries exhausted
         return None
 
     async def create_quiz(self, address: str, use_proxy: bool, retries=5):
@@ -445,10 +486,9 @@ class KiteAIBot:
                             return None, None
                         else:
                             logger.success(f"Proxy {proxy_address} is a valid contract.")
-                            if request_count == 2:
-                                with open('address.txt', 'a') as f:
-                                    f.write(f"{proxy_address}\n")
-                                proxy_mapping[proxy_address] = sender_address
+                            with open('address.txt', 'a') as f:
+                                f.write(f"{proxy_address}\n")
+                            proxy_mapping[proxy_address] = sender_address
                             return tx_receipt, proxy_address
                 except MismatchedABI:
                     logger.warning(f"Could not parse ProxyCreation event due to ABI mismatch for Tx hash: {w3.to_hex(tx_hash)}")
@@ -522,47 +562,59 @@ class KiteAIBot:
 
     def process_account(self, idx, private_key, proxy_mapping):
         try:
+            proxy_addresses = []
             for attempt in range(1, 4):
-                try:
-                    tx_receipt_1, proxy_address_1 = self.process_transaction(idx, private_key, attempt, 1, proxy_mapping)
-                    if tx_receipt_1 and tx_receipt_1['status'] == 1 and proxy_address_1:
-                        logger.success(f"First request successful for account {idx}")
-                    else:
-                        logger.warning(f"First request failed or invalid proxy for account {idx}. Retrying...")
-                        time.sleep(5)
-                        continue
-                    time.sleep(3)
-                    tx_receipt_2, proxy_address_2 = self.process_transaction(idx, private_key, attempt, 2, proxy_mapping)
-                    if tx_receipt_2 and tx_receipt_2['status'] == 1 and proxy_address_2:
-                        logger.success(f"Second request successful for account {idx}")
-                        break
-                    else:
-                        logger.warning(f"Second request failed or invalid proxy for account {idx}. Retrying...")
-                        time.sleep(5)
-                        continue
-                except Exception as e:
-                    logger.warning(f"Retrying account {idx}, attempt {attempt + 1} due to error: {str(e)}")
+                logger.info(f"Attempt {attempt} for account {idx}")
+                # First proxy creation
+                tx_receipt_1, proxy_address_1 = self.process_transaction(idx, private_key, attempt, 1, proxy_mapping)
+                if tx_receipt_1 and tx_receipt_1['status'] == 1 and proxy_address_1:
+                    logger.success(f"First proxy creation successful for account {idx}: {proxy_address_1}")
+                    proxy_addresses.append(proxy_address_1)
+                else:
+                    logger.warning(f"First proxy creation failed for account {idx}. Retrying...")
                     time.sleep(5)
+                    continue
+
+                time.sleep(DELAY_BETWEEN_TX)  # Delay between transactions
+
+                # Second proxy creation
+                tx_receipt_2, proxy_address_2 = self.process_transaction(idx, private_key, attempt, 2, proxy_mapping)
+                if tx_receipt_2 and tx_receipt_2['status'] == 1 and proxy_address_2:
+                    logger.success(f"Second proxy creation successful for account {idx}: {proxy_address_2}")
+                    proxy_addresses.append(proxy_address_2)
+                    break  # Both proxies created successfully, exit retry loop
+                else:
+                    logger.warning(f"Second proxy creation failed for account {idx}. Retrying...")
+                    time.sleep(5)
+                    continue
+            if len(proxy_addresses) == 2:
+                logger.success(f"Both proxy creations completed for account {idx}: {proxy_addresses}")
+            else:
+                logger.error(f"Failed to create both proxies for account {idx}. Only created: {proxy_addresses}")
+            return proxy_addresses
         except Exception as e:
             logger.error(f"Account {idx} failed after retries: {str(e)}")
+            return []
 
     async def process_all_accounts(self, private_keys, use_proxy):
         self.clear_terminal()
-        logger.info(f"Starting quiz processing for {len(private_keys)} accounts at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"Starting processing for {len(private_keys)} accounts at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
         separator = "=" * 25
-        for account in private_keys:
-            if not account:
+        with open('address.txt', 'w') as f:
+            f.write('')  # Clear address.txt at the start
+        proxy_mapping = {}
+
+        for idx, private_key in enumerate(private_keys, 1):
+            if not private_key:
+                logger.error(f"Empty private key at index {idx}. Skipping.")
                 continue
-            address = self.generate_address(account)
+            address = self.generate_address(private_key)
             logger.wallet(f"{separator}[ {self.mask_account(address)} ]{separator}")
-            if use_proxy:
-                proxy = self.get_next_proxy_for_account(address)
-                logger.info(f"Using proxy: {proxy or 'None'}")
-            else:
-                logger.info("Using direct connection (no proxy)")
             if not address:
                 logger.error("Invalid Private Key")
                 continue
+
+            # Set up headers
             if UserAgent:
                 ua = UserAgent()
                 user_agent = ua.random
@@ -579,8 +631,16 @@ class KiteAIBot:
                 "User-Agent": user_agent,
                 "Content-Type": "application/json"
             }
+
+            # Step 1: Perform daily quiz
+            if use_proxy:
+                proxy = self.get_next_proxy_for_account(address)
+                logger.info(f"Using proxy for quiz: {proxy or 'None'}")
+            else:
+                logger.info("Using direct connection for quiz (no proxy)")
             auth_token = self.encrypt_address(address)
             if not auth_token:
+                logger.error("Failed to generate auth token. Skipping account.")
                 continue
             self.auth_tokens[address] = auth_token
             signin = await self.user_signin(address, use_proxy)
@@ -589,26 +649,21 @@ class KiteAIBot:
                 self.header_cookies[address] = signin["cookie_header"]
                 await self.process_daily_quiz(address, use_proxy)
             else:
-                logger.error("Login Failed")
+                logger.error("Login Failed. Skipping quiz for this account.")
+                # Continue to multisig and transfer even if quiz fails
             await asyncio.sleep(3)
-        logger.info("="*72)
-        logger.success("All Accounts Have Been Processed for Daily Quiz")
 
-        logger.banner("KiteAI Multisig Task Bot")
-        logger.info(f"Starting multisig processing at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
-        with open('address.txt', 'w') as f:
-            f.write('')
-        proxy_mapping = {}
-        for idx, private_key in enumerate(private_keys, 1):
-            self.process_account(idx, private_key, proxy_mapping)
-        logger.info(f"Finished multisig account processing at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info("Starting KITE transfer process to second proxy addresses...")
-        receivers = self.load_receivers()
-        if not receivers:
-            logger.error("No receivers to process. Skipping KITE transfer.")
-            return
-        logger.info(f"Found {len(private_keys)} private keys and {len(receivers)} second proxy addresses")
-        for idx, private_key in enumerate(private_keys, 1):
+            # Step 2: Create two proxy addresses
+            logger.banner("KiteAI Multisig Task Bot")
+            logger.info(f"Starting multisig processing for account {idx} at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
+            proxy_addresses = self.process_account(idx, private_key, proxy_mapping)
+            if len(proxy_addresses) != 2:
+                logger.error(f"Failed to create two proxies for account {idx}. Skipping transfer.")
+                continue
+            logger.info(f"Finished multisig processing for account {idx} at {datetime.now(self.wib).strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # Step 3: Send KITE to second proxy address
+            logger.info("Starting KITE transfer to second proxy address...")
             selected_proxy = random.choice(self.proxies) if self.proxies else None
             logger.info(f"Using proxy for wallet {idx}: {selected_proxy or 'None'}")
             w3_transfer = Web3(ProxyHTTPProvider(RPC_URL, selected_proxy) if selected_proxy else HTTPProvider(RPC_URL))
@@ -623,13 +678,16 @@ class KiteAIBot:
                 continue
             account = w3_transfer.eth.account.from_key(private_key)
             sender_address = account.address
-            second_proxy = next((proxy for proxy, owner in proxy_mapping.items() if owner == sender_address), None)
+            second_proxy = proxy_addresses[1]  # Use the second proxy address
             if not second_proxy:
                 logger.error(f"No second proxy address found for account {sender_address}. Skipping transfer.")
                 continue
             self.process_wallet(w3_transfer, private_key, second_proxy, MIN_KITE, MAX_KITE, GAS_LIMIT, GAS_PRICE)
-            time.sleep(3)
-        logger.success("All KITE transfer operations to second proxy addresses completed!")
+            logger.success(f"All tasks completed for account {idx}: {sender_address}")
+            await asyncio.sleep(3)
+
+        logger.info("="*72)
+        logger.success("All accounts have been processed for quiz, multisig, and transfers")
 
     def display_countdown(self, seconds):
         while seconds > 0:
@@ -643,7 +701,7 @@ class KiteAIBot:
     async def main(self):
         try:
             # Display slow-printed logo at startup
-            self.slow(f"{Fore.GREEN}🪁🪁🪁🪁🪁 KITEAI_DAILY_QUIZ_&_MULTISIG_TASK_BOT 1.1 🪁🪁🪁🪁🪁{Style.RESET_ALL}",100)
+            self.slow(f"{Colors.GREEN}🪁🪁🪁🪁🪁 KITEAI_DAILY_QUIZ_&_MULTISIG_TASK_BOT 1.4 🪁🪁🪁🪁🪁{Colors.RESET}", 100)
             with open('accounts.txt', 'r') as file:
                 private_keys = [line.strip() for line in file if line.strip() and not line.startswith("#")]
             if not private_keys:
@@ -651,19 +709,22 @@ class KiteAIBot:
                 sys.exit(1)
             self.clear_terminal()
             while True:
-                print(f"{Fore.WHITE}1. Run With Proxy{Style.RESET_ALL}")
-                print(f"{Fore.WHITE}2. Run Without Proxy{Style.RESET_ALL}")
-                proxy_choice = input(f"{Fore.CYAN}Choose [1/2] -> {Style.RESET_ALL}").strip()
+                print(f"{Colors.WHITE}1. Run With Proxy{Colors.RESET}")
+                print(f"{Colors.WHITE}2. Run Without Proxy{Colors.RESET}")
+                proxy_choice = input(f"{Colors.CYAN}Choose [1/2] -> {Colors.RESET}").strip()
                 try:
                     proxy_choice = int(proxy_choice)
                     if proxy_choice in [1, 2]:
                         use_proxy = proxy_choice == 1
                         break
-                    print(f"{Fore.RED}Please enter either 1 or 2.{Style.RESET_ALL}")
+                    print(f"{Colors.RED}Please enter either 1 or 2.{Colors.RESET}")
                 except ValueError:
-                    print(f"{Fore.RED}Invalid input. Please enter 1 or 2.{Style.RESET_ALL}")
+                    print(f"{Colors.RED}Invalid input. Please enter 1 or 2.{Colors.RESET}")
             if use_proxy:
                 await self.load_proxies()
+                if not self.proxies:
+                    logger.warning("No valid proxies loaded. Falling back to direct connection.")
+                    use_proxy = False
             while True:
                 try:
                     await self.process_all_accounts(private_keys, use_proxy)
